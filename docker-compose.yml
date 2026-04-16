@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: emailflow_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: emailflow
+      POSTGRES_USER: emailflow_user
+      POSTGRES_PASSWORD: emailflow_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
