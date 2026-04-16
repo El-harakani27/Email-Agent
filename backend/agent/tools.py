@@ -1,26 +1,33 @@
 import json
+from datetime import date
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from gmail.client import GmailClient
 
 
-def create_email_tools(gmail_client: GmailClient) -> list:
+def create_email_tools(gmail_client: GmailClient, target_date: date | None = None) -> list:
     """
     Phase 1 tools: fetch + classify only. No drafting.
+    target_date: the day to fetch emails for (defaults to today).
     """
+    fetch_date = target_date or date.today()
 
     @tool
-    def fetch_latest_emails() -> str:
+    def fetch_todays_emails() -> str:
         """
-        Fetch the latest 4 emails from the user's Gmail inbox.
+        Fetch all emails received on the target date from the user's Gmail inbox (up to 10).
         Returns a JSON list of emails with id, thread_id, subject, sender,
         sender_email, date, body, and snippet.
         Always call this tool first before any analysis.
         """
-        emails = gmail_client.fetch_latest_emails(n=4)
-        return json.dumps(emails, ensure_ascii=False)
+        emails = gmail_client.fetch_emails_for_date(target_date=fetch_date, max_results=10)
+        return json.dumps({
+            "date": fetch_date.isoformat(),
+            "count": len(emails),
+            "emails": emails,
+        }, ensure_ascii=False)
 
-    return [fetch_latest_emails]
+    return [fetch_todays_emails]
 
 
 def create_draft_tools(gmail_client: GmailClient) -> list:

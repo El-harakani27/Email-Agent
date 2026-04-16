@@ -1,13 +1,17 @@
 import uuid
+from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import Session
 from json_repair import repair_json
 from agent.graph import build_agent, build_draft_agent
 from agent.prompts import EmailAnalysisResult
+from db.database import get_db
+from db.models import DailySnapshot
 
 router = APIRouter()
 
@@ -20,8 +24,10 @@ _sessions: dict[str, dict[str, Any]] = {}
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
+    clerk_user_id: str
     access_token: str
     refresh_token: str | None = None
+    target_date: str | None = None      # YYYY-MM-DD, defaults to today if None
 
 
 class DraftRequest(BaseModel):
@@ -44,21 +50,117 @@ class ResumeRequest(BaseModel):
 
 # ─── Background workers ───────────────────────────────────────────────────────
 
+def _save_snapshot(clerk_user_id: str, result: dict, snapshot_date: date | None = None) -> None:
+    """
+    Persist the agent result to daily_snapshots for this user and the target date.
+    Uses upsert logic: if a snapshot already exists for that date, update it.
+    """
+    from db.database import SessionLocal
+    db = SessionLocal()
+    try:
+        target = snapshot_date or date.today()
+        snapshot = db.query(DailySnapshot).filter(
+            DailySnapshot.user_id == clerk_user_id,
+            DailySnapshot.snapshot_date == target,
+        ).first()
+
+        emails = result.get("emails", [])
+
+        if snapshot:
+            snapshot.emails = emails
+            snapshot.agent_result = result
+        else:
+            snapshot = DailySnapshot(
+                user_id=clerk_user_id,
+                snapshot_date=target,
+                emails=emails,
+                agent_result=result,
+            )
+            db.add(snapshot)
+
+        db.commit()
+        print(f"[snapshot] saved for user={clerk_user_id} date={target} emails={len(emails)}")
+    except Exception as e:
+        print(f"[snapshot] error saving: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _run_todo_agent(clerk_user_id: str, emails: list, target_date) -> None:
+    """
+    Extract todos from the classified emails for a given day and save them to the DB.
+    Replaces any agent-generated todos for that (user, date) pair so re-runs are safe.
+    Carried-over todos (carried_from_date IS NOT NULL) are never deleted.
+    """
+    import uuid as _uuid
+    from agent.todo_agent import extract_todos
+    from db.database import SessionLocal
+    from db.models import Todo
+
+    db = SessionLocal()
+    try:
+        todo_items = extract_todos(emails, target_date)
+
+        # Delete previous agent-generated todos for this user+date (re-run safe).
+        # We keep carried-over todos (those have carried_from_date set).
+        db.query(Todo).filter(
+            Todo.user_id == clerk_user_id,
+            Todo.date == target_date,
+            Todo.carried_from_date == None,  # noqa: E711
+        ).delete(synchronize_session=False)
+
+        for item in todo_items:
+            todo = Todo(
+                id=_uuid.uuid4(),
+                user_id=clerk_user_id,
+                date=target_date,
+                title=item.title,
+                description=item.description,
+                source_email_id=item.source_email_id,
+                tags=item.tags,
+                due_hint=item.due_hint,
+                status="pending",
+            )
+            db.add(todo)
+
+        db.commit()
+        print(f"[todos] saved {len(todo_items)} todos for user={clerk_user_id} date={target_date}")
+    except Exception as e:
+        print(f"[todos] error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _run_graph(thread_id: str) -> None:
     """
     Run the agent graph from the beginning (Phase 1: classify emails).
     Called in a BackgroundTask so the HTTP response returns immediately.
     """
+    import json
+    from datetime import date as _date, datetime as _datetime
+
     session = _sessions[thread_id]
-    graph = build_agent(session["access_token"], session["refresh_token"])
+
+    # Resolve target date — use provided date or fall back to today
+    target_date_str = session.get("target_date")
+    if target_date_str:
+        target_date = _datetime.strptime(target_date_str, "%Y-%m-%d").date()
+    else:
+        target_date = _date.today()
+
+    graph = build_agent(session["access_token"], session["refresh_token"], target_date=target_date)
     _sessions[thread_id]["graph"] = graph
 
     config = {"configurable": {"thread_id": thread_id}}
     _sessions[thread_id]["config"] = config
 
+    date_label = target_date.strftime("%B %d, %Y")
+
     try:
         invoke_result = graph.invoke(
-            {"messages": [{"role": "user", "content": "Process my latest emails now."}]},
+            {"messages": [{"role": "user", "content": f"Fetch and analyze all my emails for {date_label}."}]},
             config=config,
         )
         raw = invoke_result.get("messages", [])[-1].content
@@ -66,6 +168,16 @@ def _run_graph(thread_id: str) -> None:
         print(result)
         _sessions[thread_id]["status"] = "done"
         _sessions[thread_id]["result"] = result
+
+        # Persist result to daily_snapshots for the target date (not always today)
+        clerk_user_id = session.get("clerk_user_id")
+        if clerk_user_id:
+            try:
+                result_dict = json.loads(result) if isinstance(result, str) else result
+                _save_snapshot(clerk_user_id, result_dict, snapshot_date=target_date)
+                _run_todo_agent(clerk_user_id, result_dict.get("emails", []), target_date)
+            except Exception as e:
+                print(f"[snapshot] failed to parse result: {e}")
 
     except Exception as e:
         _sessions[thread_id]["status"] = "error"
@@ -227,8 +339,10 @@ async def run_agent(req: RunRequest, background_tasks: BackgroundTasks):
 
     _sessions[thread_id] = {
         "status": "running",
+        "clerk_user_id": req.clerk_user_id,
         "access_token": req.access_token,
         "refresh_token": req.refresh_token,
+        "target_date": req.target_date,
         "interrupt": None,
         "result": None,
         "error": None,
@@ -336,3 +450,45 @@ async def get_result(thread_id: str):
         )
 
     return {"status": "done", "result": session["result"]}
+
+
+@router.get("/snapshots/{clerk_user_id}")
+def get_snapshots(clerk_user_id: str, db: Session = Depends(get_db)):
+    """
+    Return all daily snapshots for a user, newest first.
+    Used by the email calendar UI.
+    """
+    snapshots = (
+        db.query(DailySnapshot)
+        .filter(DailySnapshot.user_id == clerk_user_id)
+        .order_by(DailySnapshot.snapshot_date.desc())
+        .all()
+    )
+    return [
+        {
+            "date": s.snapshot_date.isoformat(),
+            "emails": s.emails,
+            "agent_result": s.agent_result,
+        }
+        for s in snapshots
+    ]
+
+
+@router.get("/snapshots/{clerk_user_id}/{snapshot_date}")
+def get_snapshot_by_date(clerk_user_id: str, snapshot_date: str, db: Session = Depends(get_db)):
+    """
+    Return a single snapshot for a user on a specific date (YYYY-MM-DD).
+    """
+    snapshot = db.query(DailySnapshot).filter(
+        DailySnapshot.user_id == clerk_user_id,
+        DailySnapshot.snapshot_date == snapshot_date,
+    ).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No snapshot for this date")
+
+    return {
+        "date": snapshot.snapshot_date.isoformat(),
+        "emails": snapshot.emails,
+        "agent_result": snapshot.agent_result,
+    }

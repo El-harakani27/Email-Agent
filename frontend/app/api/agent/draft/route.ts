@@ -1,22 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { auth } from "@clerk/nextjs/server";
 
 const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 /**
  * POST /api/agent/draft
- * Reads Gmail tokens from the httpOnly cookie and proxies to FastAPI /agent/draft.
- * The client sends the email data; tokens are injected server-side.
+ * Fetches Gmail tokens from the DB using the Clerk userId,
+ * then proxies to FastAPI /agent/draft with the email data.
+ * The client never sees the raw tokens.
  */
 export async function POST(req: NextRequest) {
-  const cookieStore = cookies();
-  const tokenCookie = cookieStore.get("gmail_tokens");
+  const { userId } = await auth();
 
-  if (!tokenCookie) {
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Fetch Gmail tokens from DB
+  const tokenRes = await fetch(`${BACKEND}/users/gmail-token/${userId}`);
+  if (!tokenRes.ok) {
     return NextResponse.json({ error: "Not connected to Gmail" }, { status: 401 });
   }
 
-  const tokens = JSON.parse(tokenCookie.value);
+  const tokens = await tokenRes.json();
   const body = await req.json();
 
   const res = await fetch(`${BACKEND}/agent/draft`, {

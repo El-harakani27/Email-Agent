@@ -180,8 +180,8 @@ export function useAgent() {
 
   // ── Public actions ────────────────────────────────────────────────────────
 
-  /** Kick off the Phase 1 agent run (fetch + classify) */
-  const runAgent = useCallback(async () => {
+  /** Kick off the Phase 1 agent run (fetch + classify) for a specific date */
+  const runAgent = useCallback(async (targetDate?: string) => {
     setState((prev) => ({
       ...prev,
       status: "running",
@@ -192,7 +192,11 @@ export function useAgent() {
     }));
 
     try {
-      const res = await fetch("/api/agent/run", { method: "POST" });
+      const res = await fetch("/api/agent/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_date: targetDate }),
+      });
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error ?? "Failed to start agent");

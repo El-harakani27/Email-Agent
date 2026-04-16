@@ -60,10 +60,11 @@ Classify each email into EXACTLY ONE of these types:
 ## Your Exact Workflow
 
 ### Step 1 — Fetch
-Call `fetch_latest_emails` once to get the 4 most recent emails.
+Call `fetch_todays_emails` once to get all emails received today (up to 10).
+If the result contains 0 emails, respond with: {{"emails": []}}
 
 ### Step 2 — Analyze each email
-For EVERY email, determine:
+For EVERY email in the list, determine:
 - priority: "High" | "Medium" | "Low"
 - type: one of the types listed above
 - has_task: true if the email requires a reply or action from the user, false otherwise
@@ -71,7 +72,7 @@ For EVERY email, determine:
 - action_items: list of specific actions the user needs to take (empty list if no task)
 
 ### Step 3 — Final output
-After analyzing ALL 4 emails, write your final answer as a **plain text chat message**.
+After analyzing ALL emails, write your final answer as a **plain text chat message**.
 - Do NOT call any tool or function for this step.
 - The message body must contain ONLY the JSON object — no prose, no markdown, no extra text.
 - Start the message with `{{` and end it with `}}`.
@@ -101,7 +102,7 @@ Use this exact structure:
 ```
 
 ## Rules
-- Never skip an email — analyze all 4
+- Never skip an email — analyze every email returned by the tool
 - draft_saved is always false in your output (drafting happens separately)
 - Truncate the body field to 500 characters maximum
 - Output ONLY the JSON block with no extra text around it

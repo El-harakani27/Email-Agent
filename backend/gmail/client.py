@@ -1,5 +1,6 @@
 import base64
 import re
+from datetime import date, timedelta
 from email.mime.text import MIMEText
 
 from google.oauth2.credentials import Credentials
@@ -17,6 +18,54 @@ class GmailClient:
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
         )
         self.service = build("gmail", "v1", credentials=self.creds)
+
+    def fetch_emails_for_date(self, target_date: date | None = None, max_results: int = 10) -> list[dict]:
+        """
+        Fetch emails received on a specific date (defaults to today).
+        Uses Gmail's search query: after:YYYY/MM/DD before:YYYY/MM/DD+1
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        after = target_date.strftime("%Y/%m/%d")
+        before = (target_date + timedelta(days=1)).strftime("%Y/%m/%d")
+        query = f"after:{after} before:{before}"
+
+        results = (
+            self.service.users()
+            .messages()
+            .list(userId="me", maxResults=max_results, labelIds=["INBOX"], q=query)
+            .execute()
+        )
+
+        messages = results.get("messages", [])
+        emails = []
+
+        for msg in messages:
+            detail = (
+                self.service.users()
+                .messages()
+                .get(userId="me", id=msg["id"], format="full")
+                .execute()
+            )
+
+            headers = {
+                h["name"]: h["value"]
+                for h in detail["payload"]["headers"]
+            }
+
+            emails.append({
+                "id": msg["id"],
+                "thread_id": detail["threadId"],
+                "subject": headers.get("Subject", "(no subject)"),
+                "sender": headers.get("From", "Unknown"),
+                "sender_email": self._extract_email(headers.get("From", "")),
+                "date": headers.get("Date", ""),
+                "body": self._extract_body(detail["payload"])[:500],
+                "snippet": detail.get("snippet", ""),
+            })
+
+        return emails
 
     def fetch_latest_emails(self, n: int = 4) -> list[dict]:
         results = (

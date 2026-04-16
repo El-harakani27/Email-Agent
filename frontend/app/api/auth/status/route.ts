@@ -1,23 +1,38 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { auth } from "@clerk/nextjs/server";
 
 /**
  * GET /api/auth/status
- * Returns whether the user has valid Gmail tokens in their session.
- * The client calls this on mount to decide whether to show ConnectButton.
+ * Returns whether the signed-in user has connected their Gmail account.
  */
 export async function GET() {
-  const cookieStore = cookies();
-  const tokenCookie = cookieStore.get("gmail_tokens");
-  return NextResponse.json({ connected: !!tokenCookie });
+  const { userId } = await auth();
+
+  if (!userId) {
+    return NextResponse.json({ connected: false });
+  }
+
+  const res = await fetch(
+    `${process.env.BACKEND_URL}/users/gmail-token/${userId}`
+  );
+
+  return NextResponse.json({ connected: res.ok });
 }
 
 /**
  * DELETE /api/auth/status
- * Disconnects the user by clearing the token cookie.
+ * Disconnects Gmail by deleting the token row from the DB.
  */
 export async function DELETE() {
-  const cookieStore = cookies();
-  cookieStore.delete("gmail_tokens");
+  const { userId } = await auth();
+
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  await fetch(`${process.env.BACKEND_URL}/users/gmail-token/${userId}`, {
+    method: "DELETE",
+  });
+
   return NextResponse.json({ connected: false });
 }

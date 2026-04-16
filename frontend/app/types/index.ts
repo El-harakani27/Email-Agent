@@ -42,3 +42,28 @@ export interface DraftInterrupt {
 
 export type AgentStatus = "idle" | "running" | "interrupted" | "done" | "error";
 export type DraftStatus = "idle" | "running" | "interrupted" | "done" | "error";
+
+export type TodoStatus = "pending" | "done" | "skipped";
+
+export type TodoTag =
+  | "urgent"
+  | "important"
+  | "follow-up"
+  | "meeting"
+  | "payment"
+  | "review"
+  | "waiting-on"
+  | "bug";
+
+export interface Todo {
+  id: string;
+  title: string;
+  description: string;
+  source_email_id: string | null;
+  status: TodoStatus;
+  tags: TodoTag[];
+  due_hint: string | null;
+  carried_from_date: string | null;
+  carry_count: number;
+  created_at: string;
+}

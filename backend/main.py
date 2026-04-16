@@ -6,6 +6,8 @@ import os
 load_dotenv()
 
 from api.routes import router
+from api.users import router as users_router
+from api.todos import router as todos_router
 
 app = FastAPI(title="Email Flow API")
 
@@ -18,6 +20,8 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(users_router)
+app.include_router(todos_router)
 
 
 @app.get("/health")

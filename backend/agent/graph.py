@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import date
 from langchain.agents import create_agent
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -23,17 +24,17 @@ _db_conn = sqlite3.connect("./agent_state.db", check_same_thread=False)
 _checkpointer = SqliteSaver(_db_conn)
 
 
-def build_agent(access_token: str, refresh_token: str | None = None):
+def build_agent(access_token: str, refresh_token: str | None = None, target_date: date | None = None):
     """
-    Build the Phase 1 agent: fetches + classifies emails, outputs JSON.
-    No drafting — the user triggers drafts manually per email.
+    Build the Phase 1 agent: fetches + classifies emails for a specific date.
+    target_date defaults to today if not provided.
     """
     gmail_client = GmailClient(
         access_token=access_token,
         refresh_token=refresh_token,
     )
 
-    tools = create_email_tools(gmail_client)
+    tools = create_email_tools(gmail_client, target_date=target_date)
 
     model = ChatGroq(
         model="openai/gpt-oss-120b",
